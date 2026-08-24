@@ -1,20 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   Upload, Download, Image as ImageIcon, Sliders, 
-  ShieldCheck, RefreshCw, AlertCircle, FileText
+  ShieldCheck, RefreshCw, AlertCircle
 } from 'lucide-react';
-import heic2any from 'heic2any';
-import * as pdfjsLib from 'pdfjs-dist';
-import mammoth from 'mammoth';
 import { getBase64SizeKB, optimizeToTargetSize } from './utils/compressor';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
-
 const MAX_FILE_SIZE_MB = 25;
-const ACCEPTED_TYPES = [
-  'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif',
-  'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-];
 
 export default function App() {
   const [items, setItems] = useState([]);
@@ -35,15 +26,19 @@ export default function App() {
   const canvasRef = useRef(null);
 
   const convertFileToCanvasSource = async (file) => {
-    const fileType = file.type || file.name.split('.').pop().toLowerCase();
+    const ext = file.name.split('.').pop().toLowerCase();
 
-    if (fileType.includes('heic') || fileType.includes('heif')) {
+    if (ext === 'heic' || ext === 'heif') {
+      const heic2any = (await import('heic2any')).default;
       const convertedBlob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
       const blob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
       return URL.createObjectURL(blob);
     }
 
-    if (fileType.includes('pdf')) {
+    if (ext === 'pdf') {
+      const pdfjsLib = await import('pdfjs-dist');
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+      
       const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       const page = await pdf.getPage(1);
@@ -58,7 +53,8 @@ export default function App() {
       return tempCanvas.toDataURL('image/jpeg');
     }
 
-    if (fileType.includes('wordprocessingml') || file.name.endsWith('.docx')) {
+    if (ext === 'docx') {
+      const mammoth = await import('mammoth');
       const arrayBuffer = await file.arrayBuffer();
       const result = await mammoth.convertToHtml({ arrayBuffer });
       
@@ -107,7 +103,7 @@ export default function App() {
     try {
       for (const file of rawFiles) {
         if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-          setErrorMessage(`File "${file.name}" exceeds the ${MAX_FILE_SIZE_MB}MB safety limit.`);
+          setErrorMessage(`File "${file.name}" exceeds the ${MAX_FILE_SIZE_MB}MB limit.`);
           continue;
         }
 
@@ -123,7 +119,7 @@ export default function App() {
 
       setItems((prev) => [...prev, ...validBatch]);
     } catch (err) {
-      setErrorMessage('Failed to parse file format properly.');
+      setErrorMessage('Could not process this file format. Try uploading a standard JPG, PNG, or WebP.');
     } finally {
       setIsIngesting(false);
     }
@@ -162,7 +158,7 @@ export default function App() {
         resultUrl = canvas.toDataURL(config.exportFormat, config.quality);
       }
 
-      const processedKB = getBase64SizeKB(resultUrl, config.exportFormat);
+      const processedKB = getBase64SizeKB(resultUrl);
       const reduction = (((currentItem.originalKB - processedKB) / currentItem.originalKB) * 100).toFixed(1);
 
       setOutputs((prev) => {
@@ -182,7 +178,7 @@ export default function App() {
     };
 
     img.onerror = () => {
-      setErrorMessage('Failed to render document context to canvas.');
+      setErrorMessage('Failed to render file buffer.');
       setIsProcessing(false);
     };
   };

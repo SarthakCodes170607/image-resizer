@@ -1,7 +1,9 @@
-export const getBase64SizeKB = (dataUrl, format) => {
-  if (!dataUrl) return 0;
-  const header = `data:${format};base64,`;
-  const bytes = Math.round((dataUrl.length - header.length) * (3 / 4));
+export const getBase64SizeKB = (dataUrl) => {
+  if (!dataUrl) return '0.00';
+  const base64Parts = dataUrl.split(',');
+  const base64Data = base64Parts[1] || base64Parts[0];
+  const padding = (base64Data.match(/=/g) || []).length;
+  const bytes = (base64Data.length * 0.75) - padding;
   return (bytes / 1024).toFixed(2);
 };
 
@@ -14,7 +16,7 @@ export const optimizeToTargetSize = (canvas, format, targetKB) => {
   for (let i = 0; i < 6; i++) {
     const mid = (low + high) / 2;
     const currentDataUrl = canvas.toDataURL(format, mid);
-    const currentSize = parseFloat(getBase64SizeKB(currentDataUrl, format));
+    const currentSize = parseFloat(getBase64SizeKB(currentDataUrl));
 
     if (currentSize <= targetKB) {
       optimalUrl = currentDataUrl;
