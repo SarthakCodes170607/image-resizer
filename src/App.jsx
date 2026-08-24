@@ -1,66 +1,121 @@
-const compressToTargetSize = async () => {
-  if (!imageFile || targetKB <= 0) return;
-  setProcessing(true);
+import React, { useState } from 'react';
 
-  const targetBytes = targetKB * 1024;
-  const img = new Image();
-  const initialUrl = URL.createObjectURL(imageFile);
-  img.src = initialUrl;
+export default function App() {
+  const [imageFile, setImageFile] = useState(null);
+  const [targetKB, setTargetKB] = useState(100);
+  const [resizedImage, setResizedImage] = useState(null);
+  const [processing, setProcessing] = useState(false);
+  const [stats, setStats] = useState(null);
 
-  img.onload = async () => {
-    // Release initial object URL from memory
-    URL.revokeObjectURL(initialUrl);
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setImageFile(file);
+      setResizedImage(null);
+      setStats(null);
+    }
+  };
 
-    let scale = 1.0;
-    let bestBlob = null;
-    let canvas = document.createElement('canvas');
-    let ctx = canvas.getContext('2d');
+  const compressToTargetSize = async () => {
+    if (!imageFile || targetKB <= 0) return;
+    setProcessing(true);
 
-    // Outer loop: scale down canvas dimensions if quality compression hits limits
-    while (scale > 0.05) {
-      canvas.width = Math.max(1, Math.floor(img.width * scale));
-      canvas.height = Math.max(1, Math.floor(img.height * scale));
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const targetBytes = targetKB * 1024;
+    const img = new Image();
+    const initialUrl = URL.createObjectURL(imageFile);
+    img.src = initialUrl;
 
-      let min = 0.01;
-      let max = 1.0;
-      let iterations = 0;
+    img.onload = async () => {
+      URL.revokeObjectURL(initialUrl);
 
-      // Binary search over JPEG quality
-      while (min <= max && iterations < 7) {
-        const mid = (min + max) / 2;
-        const blob = await new Promise((resolve) =>
-          canvas.toBlob((b) => resolve(b), 'image/jpeg', mid)
-        );
+      let scale = 1.0;
+      let bestBlob = null;
+      let canvas = document.createElement('canvas');
+      let ctx = canvas.getContext('2d');
 
-        if (blob) {
-          bestBlob = blob;
-          if (blob.size > targetBytes) {
-            max = mid - 0.05;
-          } else {
-            min = mid + 0.05;
+      while (scale > 0.05) {
+        canvas.width = Math.max(1, Math.floor(img.width * scale));
+        canvas.height = Math.max(1, Math.floor(img.height * scale));
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        let min = 0.01;
+        let max = 1.0;
+        let iterations = 0;
+
+        while (min <= max && iterations < 7) {
+          const mid = (min + max) / 2;
+          const blob = await new Promise((resolve) =>
+            canvas.toBlob((b) => resolve(b), 'image/jpeg', mid)
+          );
+
+          if (blob) {
+            bestBlob = blob;
+            if (blob.size > targetBytes) {
+              max = mid - 0.05;
+            } else {
+              min = mid + 0.05;
+            }
           }
+          iterations++;
         }
-        iterations++;
+
+        if (bestBlob && bestBlob.size <= targetBytes) break;
+        scale -= 0.2;
       }
 
-      // Break outer loop if target size achieved
-      if (bestBlob && bestBlob.size <= targetBytes) break;
-
-      // Scale down image dimensions by 20% if quality reduction wasn't enough
-      scale -= 0.2;
-    }
-
-    if (bestBlob) {
-      if (resizedImage) URL.revokeObjectURL(resizedImage);
-      const url = URL.createObjectURL(bestBlob);
-      setResizedImage(url);
-      setStats({
-        originalSize: (imageFile.size / 1024).toFixed(1),
-        finalSize: (bestBlob.size / 1024).toFixed(1),
-      });
-    }
-    setProcessing(false);
+      if (bestBlob) {
+        if (resizedImage) URL.revokeObjectURL(resizedImage);
+        const url = URL.createObjectURL(bestBlob);
+        setResizedImage(url);
+        setStats({
+          originalSize: (imageFile.size / 1024).toFixed(1),
+          finalSize: (bestBlob.size / 1024).toFixed(1),
+        });
+      }
+      setProcessing(false);
+    };
   };
-};
+
+  return (
+    <div style={{ padding: '2rem', fontFamily: 'sans-serif', maxWidth: '600px', margin: 'auto' }}>
+      <h2>Target File Size Image Resizer</h2>
+
+      <input type="file" accept="image/*" onChange={handleImageUpload} />
+
+      {imageFile && (
+        <div style={{ marginTop: '1.5rem' }}>
+          <label>
+            <strong>Target Size (KB):</strong>
+            <input
+              type="number"
+              value={targetKB}
+              onChange={(e) => setTargetKB(Number(e.target.value))}
+              style={{ marginLeft: '10px', padding: '5px', width: '100px' }}
+            />
+          </label>
+
+          <button
+            onClick={compressToTargetSize}
+            disabled={processing}
+            style={{ marginLeft: '10px', padding: '6px 12px', cursor: 'pointer' }}
+          >
+            {processing ? 'Compressing...' : 'Resize Image'}
+          </button>
+        </div>
+      )}
+
+      {stats && (
+        <div style={{ marginTop: '1.5rem' }}>
+          <p><strong>Original Size:</strong> {stats.originalSize} KB</p>
+          <p><strong>Resulting Size:</strong> {stats.finalSize} KB</p>
+          <img src={resizedImage} alt="Resized" style={{ maxWidth: '100%', marginTop: '10px' }} />
+          <br />
+          <a href={resizedImage} download={`resized_${targetKB}KB.jpg`}>
+            <button style={{ marginTop: '10px', padding: '8px 16px' }}>Download Image</button>
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
