@@ -1,17 +1,31 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { 
-  Upload, Download, Image as ImageIcon, Sliders, 
-  ShieldCheck, RefreshCw, AlertCircle
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  Download,
+  Image as ImageIcon,
+  RefreshCw,
+  ShieldCheck,
+  Sliders,
+  Upload,
 } from 'lucide-react';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { getBase64SizeKB, optimizeToTargetSize } from './utils/compressor';
 
 const MAX_FILE_SIZE_MB = 25;
+const SUPPORTED_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'avif', 'gif', 'heic', 'heif', 'pdf']);
+
+const getExtension = (fileName) => fileName.split('.').pop()?.toLowerCase() || '';
+const baseName = (fileName) => fileName.replace(/\.[^/.]+$/, '') || 'image';
+const extensionForMime = (mime) => ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[mime] || 'png');
 
 export default function App() {
   const [items, setItems] = useState([]);
   const [activeIdx, setActiveIdx] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
-  
+  const [outputs, setOutputs] = useState({});
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isIngesting, setIsIngesting] = useState(false);
+  const objectUrlsRef = useRef(new Set());
   const [config, setConfig] = useState({
     targetKB: 50,
     enforceTargetKB: true,
@@ -20,356 +34,185 @@ export default function App() {
     exportFormat: 'image/jpeg',
   });
 
-  const [outputs, setOutputs] = useState([]);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [isIngesting, setIsIngesting] = useState(false);
-  const canvasRef = useRef(null);
+  useEffect(() => () => {
+    objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    objectUrlsRef.current.clear();
+  }, []);
+
+  const createObjectUrl = (blob) => {
+    const url = URL.createObjectURL(blob);
+    objectUrlsRef.current.add(url);
+    return url;
+  };
 
   const convertFileToCanvasSource = async (file) => {
-    const ext = file.name.split('.').pop().toLowerCase();
+    const ext = getExtension(file.name);
 
     if (ext === 'heic' || ext === 'heif') {
-      const heic2any = (await import('heic2any')).default;
-      const convertedBlob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
-      const blob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
-      return URL.createObjectURL(blob);
+      const heic2anyModule = await import('heic2any');
+      const heic2any = heic2anyModule.default || heic2anyModule;
+      const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.8 });
+      return createObjectUrl(Array.isArray(converted) ? converted[0] : converted);
     }
 
     if (ext === 'pdf') {
       const pdfjsLib = await import('pdfjs-dist');
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
-      
-      const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      const page = await pdf.getPage(1);
-      const viewport = page.getViewport({ scale: 1.5 });
-      
-      const tempCanvas = document.createElement('canvas');
-      const tempCtx = tempCanvas.getContext('2d');
-      tempCanvas.width = viewport.width;
-      tempCanvas.height = viewport.height;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+      const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
 
-      await page.render({ canvasContext: tempCtx, viewport }).promise;
-      return tempCanvas.toDataURL('image/jpeg');
-    }
+      try {
+        const page = await pdf.getPage(1);
+        const viewport = page.getViewport({ scale: 1.5 });
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Could not create a canvas context.');
 
-    if (ext === 'docx') {
-      const mammoth = await import('mammoth');
-      const arrayBuffer = await file.arrayBuffer();
-      const result = await mammoth.convertToHtml({ arrayBuffer });
-      
-      const tempCanvas = document.createElement('canvas');
-      const tempCtx = tempCanvas.getContext('2d');
-      tempCanvas.width = 800;
-      tempCanvas.height = 1000;
-
-      tempCtx.fillStyle = '#ffffff';
-      tempCtx.fillRect(0, 0, 800, 1000);
-      tempCtx.fillStyle = '#000000';
-      tempCtx.font = '16px sans-serif';
-
-      const cleanText = result.value.replace(/<[^>]*>/g, ' ');
-      const words = cleanText.split(' ');
-      let line = '';
-      let y = 50;
-
-      for (let n = 0; n < words.length; n++) {
-        let testLine = line + words[n] + ' ';
-        let metrics = tempCtx.measureText(testLine);
-        if (metrics.width > 700 && n > 0) {
-          tempCtx.fillText(line, 50, y);
-          line = words[n] + ' ';
-          y += 24;
-          if (y > 930) break;
-        } else {
-          line = testLine;
-        }
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        await page.render({ canvasContext: context, viewport }).promise;
+        return canvas.toDataURL('image/jpeg', 0.92);
+      } finally {
+        await pdf.destroy();
       }
-      tempCtx.fillText(line, 50, y);
-      return tempCanvas.toDataURL('image/jpeg');
     }
 
-    return URL.createObjectURL(file);
+    return createObjectUrl(file);
   };
 
-  const handleFileDrop = async (e) => {
-    const rawFiles = Array.from(e.target.files || []);
+  const addFiles = async (fileList) => {
+    const rawFiles = Array.from(fileList || []);
     if (!rawFiles.length) return;
 
     setErrorMessage('');
     setIsIngesting(true);
-    const validBatch = [];
+    const accepted = [];
+    const errors = [];
 
-    try {
-      for (const file of rawFiles) {
-        if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-          setErrorMessage(`File "${file.name}" exceeds the ${MAX_FILE_SIZE_MB}MB limit.`);
-          continue;
-        }
+    for (const file of rawFiles) {
+      const ext = getExtension(file.name);
+      if (!SUPPORTED_EXTENSIONS.has(ext)) {
+        errors.push(`“${file.name}” is not a supported file type.`);
+        continue;
+      }
+      if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+        errors.push(`“${file.name}” exceeds the ${MAX_FILE_SIZE_MB} MB limit.`);
+        continue;
+      }
 
-        const srcUrl = await convertFileToCanvasSource(file);
-
-        validBatch.push({
-          raw: file,
+      try {
+        accepted.push({
+          id: crypto.randomUUID(),
           fileName: file.name,
-          originalKB: (file.size / 1024).toFixed(2),
-          srcUrl: srcUrl,
+          originalKB: file.size / 1024,
+          srcUrl: await convertFileToCanvasSource(file),
         });
+      } catch (error) {
+        console.error(error);
+        errors.push(`“${file.name}” could not be loaded.`);
       }
-
-      setItems((prev) => [...prev, ...validBatch]);
-    } catch (err) {
-      setErrorMessage('Could not process this file format. Try uploading a standard JPG, PNG, or WebP.');
-    } finally {
-      setIsIngesting(false);
     }
+
+    if (accepted.length) setItems((previous) => [...previous, ...accepted]);
+    if (errors.length) setErrorMessage(errors.join(' '));
+    setIsIngesting(false);
   };
-
-  const processActiveImage = () => {
-    if (!items.length || !items[activeIdx]) return;
-    setIsProcessing(true);
-
-    const currentItem = items[activeIdx];
-    const img = new Image();
-    img.src = currentItem.srcUrl;
-
-    img.onload = () => {
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-
-      const width = Math.round((img.width * config.scaleFactor) / 100);
-      const height = Math.round((img.height * config.scaleFactor) / 100);
-
-      canvas.width = width;
-      canvas.height = height;
-
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, 0, 0, width, height);
-
-      let resultUrl = '';
-      let usedQuality = config.quality;
-
-      if (config.enforceTargetKB && config.exportFormat !== 'image/png') {
-        const res = optimizeToTargetSize(canvas, config.exportFormat, config.targetKB);
-        resultUrl = res.dataUrl;
-        usedQuality = res.quality;
-      } else {
-        resultUrl = canvas.toDataURL(config.exportFormat, config.quality);
-      }
-
-      const processedKB = getBase64SizeKB(resultUrl);
-      const reduction = (((currentItem.originalKB - processedKB) / currentItem.originalKB) * 100).toFixed(1);
-
-      setOutputs((prev) => {
-        const updated = [...prev];
-        updated[activeIdx] = {
-          dataUrl: resultUrl,
-          sizeKB: processedKB,
-          reductionRatio: reduction,
-          resWidth: width,
-          resHeight: height,
-          effectiveQuality: (usedQuality * 100).toFixed(0)
-        };
-        return updated;
-      });
-
-      setIsProcessing(false);
-    };
-
-    img.onerror = () => {
-      setErrorMessage('Failed to render file buffer.');
-      setIsProcessing(false);
-    };
-  };
-
-  useEffect(() => {
-    if (items.length > 0) {
-      processActiveImage();
-    }
-  }, [items, activeIdx, config]);
 
   const currentItem = items[activeIdx];
-  const currentOutput = outputs[activeIdx];
+  const currentOutput = currentItem ? outputs[currentItem.id] : null;
+
+  useEffect(() => {
+    if (!currentItem) return undefined;
+
+    let cancelled = false;
+    setIsProcessing(true);
+    setOutputs((previous) => {
+      const next = { ...previous };
+      delete next[currentItem.id];
+      return next;
+    });
+
+    const image = new Image();
+    image.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Could not create a canvas context.');
+
+        const width = Math.max(1, Math.round((image.naturalWidth * config.scaleFactor) / 100));
+        const height = Math.max(1, Math.round((image.naturalHeight * config.scaleFactor) / 100));
+        canvas.width = width;
+        canvas.height = height;
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = 'high';
+        context.drawImage(image, 0, 0, width, height);
+
+        let result;
+        if (config.enforceTargetKB && config.exportFormat !== 'image/png') {
+          result = optimizeToTargetSize(canvas, config.exportFormat, config.targetKB, config.quality);
+        } else {
+          const dataUrl = canvas.toDataURL(config.exportFormat, config.quality);
+          result = {
+            dataUrl,
+            sizeKB: getBase64SizeKB(dataUrl),
+            quality: config.exportFormat === 'image/png' ? null : config.quality,
+            targetMet: true,
+          };
+        }
+
+        if (cancelled) return;
+        const outputMime = result.dataUrl.slice(5, result.dataUrl.indexOf(';'));
+        setOutputs((previous) => ({
+          ...previous,
+          [currentItem.id]: {
+            ...result,
+            reductionRatio: ((1 - result.sizeKB / currentItem.originalKB) * 100),
+            resWidth: width,
+            resHeight: height,
+            extension: extensionForMime(outputMime),
+          },
+        }));
+        if (!result.targetMet) {
+          setErrorMessage(`The ${config.targetKB} KB target could not be reached at the minimum quality.`);
+        }
+      } catch (error) {
+        console.error(error);
+        if (!cancelled) setErrorMessage(error.message || 'Failed to process this file.');
+      } finally {
+        if (!cancelled) setIsProcessing(false);
+      }
+    };
+    image.onerror = () => {
+      if (!cancelled) {
+        setErrorMessage('Failed to render this file.');
+        setIsProcessing(false);
+      }
+    };
+    image.src = currentItem.srcUrl;
+
+    return () => {
+      cancelled = true;
+      image.onload = null;
+      image.onerror = null;
+    };
+  }, [currentItem, config]);
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 p-6 flex flex-col items-center">
-      <canvas ref={canvasRef} className="hidden" />
-
+    <div className="min-h-screen bg-slate-900 p-6 text-slate-100 flex flex-col items-center">
       <header className="w-full max-w-5xl flex justify-between items-center pb-6 mb-6 border-b border-slate-800">
-        <div>
-          <h1 className="text-xl font-bold text-slate-100 tracking-tight">
-            Client-Side Asset Optimizer
-          </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            Zero network transfer • In-memory document & image execution
-          </p>
-        </div>
-        <div className="flex items-center space-x-2 bg-slate-800 border border-slate-700 text-emerald-400 text-xs px-3 py-1.5 rounded-md">
-          <ShieldCheck className="w-4 h-4" />
-          <span>Local Engine</span>
-        </div>
+        <div><h1 className="text-xl font-bold">Client-Side Asset Optimizer</h1><p className="text-xs text-slate-400 mt-1">Local, in-memory image and document processing</p></div>
+        <div className="flex items-center space-x-2 bg-slate-800 border border-slate-700 text-emerald-400 text-xs px-3 py-1.5 rounded-md"><ShieldCheck className="w-4 h-4" /><span>Local Engine</span></div>
       </header>
-
-      {errorMessage && (
-        <div className="w-full max-w-5xl mb-4 bg-red-950/50 border border-red-800 text-red-300 text-xs p-3 rounded-lg flex items-center space-x-2">
-          <AlertCircle className="w-4 h-4 shrink-0" />
-          <span>{errorMessage}</span>
-        </div>
-      )}
-
+      {errorMessage && <div className="w-full max-w-5xl mb-4 bg-red-950/50 border border-red-800 text-red-300 text-xs p-3 rounded-lg flex items-center space-x-2"><AlertCircle className="w-4 h-4 shrink-0" /><span>{errorMessage}</span></div>}
       <main className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-5 space-y-6">
-          <div className="bg-slate-800/40 border-2 border-dashed border-slate-700 hover:border-slate-500 transition-colors rounded-xl p-6 text-center relative">
-            <input 
-              type="file" 
-              multiple 
-              onChange={handleFileDrop} 
-              className="absolute inset-0 opacity-0 cursor-pointer" 
-            />
-            {isIngesting ? (
-              <RefreshCw className="w-7 h-7 text-indigo-400 animate-spin mx-auto mb-2" />
-            ) : (
-              <Upload className="w-7 h-7 text-slate-400 mx-auto mb-2" />
-            )}
-            <p className="text-xs font-medium text-slate-200">Select files or drop here</p>
-            <p className="text-[10px] text-slate-500 mt-1">Supports JPG, PNG, WebP, HEIC, PDF, DOCX (Max 25MB)</p>
+          <div onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }} className="bg-slate-800/40 border-2 border-dashed border-slate-700 hover:border-slate-500 transition-colors rounded-xl p-6 text-center relative">
+            <input type="file" multiple accept="image/*,.heic,.heif,.pdf" onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }} className="absolute inset-0 opacity-0 cursor-pointer" />
+            {isIngesting ? <RefreshCw className="w-7 h-7 text-indigo-400 animate-spin mx-auto mb-2" /> : <Upload className="w-7 h-7 text-slate-400 mx-auto mb-2" />}
+            <p className="text-xs font-medium text-slate-200">Select files or drop them here</p><p className="text-[10px] text-slate-500 mt-1">JPG, PNG, WebP, HEIC, or PDF (max 25 MB)</p>
           </div>
-
-          {items.length > 0 && (
-            <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4 space-y-4">
-              <div className="flex items-center space-x-2 border-b border-slate-700/80 pb-3">
-                <Sliders className="w-4 h-4 text-slate-400" />
-                <h2 className="font-semibold text-xs text-slate-200">Compression Settings</h2>
-              </div>
-
-              <div className="space-y-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
-                <div className="flex justify-between items-center">
-                  <label className="text-xs text-slate-300">Target Size Limit</label>
-                  <input 
-                    type="checkbox" 
-                    checked={config.enforceTargetKB} 
-                    onChange={e => setConfig(prev => ({ ...prev, enforceTargetKB: e.target.checked }))}
-                    className="rounded bg-slate-700 border-slate-600 text-indigo-500 focus:ring-0" 
-                  />
-                </div>
-                {config.enforceTargetKB && (
-                  <div className="flex items-center space-x-2 pt-1">
-                    <input 
-                      type="number" 
-                      value={config.targetKB} 
-                      onChange={e => setConfig(prev => ({ ...prev, targetKB: Number(e.target.value) }))}
-                      className="bg-slate-800 border border-slate-700 rounded px-2.5 py-1 text-xs w-24 text-slate-100 focus:outline-none"
-                    />
-                    <span className="text-xs text-slate-400">KB Max</span>
-                  </div>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[11px] text-slate-400 block mb-1">Format</label>
-                  <select 
-                    value={config.exportFormat}
-                    onChange={e => setConfig(prev => ({ ...prev, exportFormat: e.target.value }))}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none"
-                  >
-                    <option value="image/jpeg">JPEG</option>
-                    <option value="image/webp">WebP</option>
-                    <option value="image/png">PNG</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-[11px] text-slate-400 block mb-1">Scale: {config.scaleFactor}%</label>
-                  <input 
-                    type="range" 
-                    min="10" 
-                    max="100" 
-                    value={config.scaleFactor} 
-                    onChange={e => setConfig(prev => ({ ...prev, scaleFactor: Number(e.target.value) }))}
-                    className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
+          {items.length > 0 && <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4 space-y-4"><div className="flex items-center space-x-2 border-b border-slate-700/80 pb-3"><Sliders className="w-4 h-4 text-slate-400" /><h2 className="font-semibold text-xs">Compression Settings</h2></div><div className="space-y-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800"><div className="flex justify-between items-center"><label className="text-xs text-slate-300">Target Size Limit</label><input type="checkbox" checked={config.enforceTargetKB} onChange={(event) => setConfig((previous) => ({ ...previous, enforceTargetKB: event.target.checked }))} /></div>{config.enforceTargetKB && <div className="flex items-center space-x-2 pt-1"><input type="number" min="1" step="1" value={config.targetKB} onChange={(event) => setConfig((previous) => ({ ...previous, targetKB: event.target.value === '' ? '' : Number(event.target.value) }))} className="bg-slate-800 border border-slate-700 rounded px-2.5 py-1 text-xs w-24" /><span className="text-xs text-slate-400">KB Max</span></div>}</div><div className="grid grid-cols-2 gap-3"><div><label className="text-[11px] text-slate-400 block mb-1">Format</label><select value={config.exportFormat} onChange={(event) => setConfig((previous) => ({ ...previous, exportFormat: event.target.value }))} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs"><option value="image/jpeg">JPEG</option><option value="image/webp">WebP</option><option value="image/png">PNG</option></select></div><div><label className="text-[11px] text-slate-400 block mb-1">Scale: {config.scaleFactor}%</label><input type="range" min="10" max="100" value={config.scaleFactor} onChange={(event) => setConfig((previous) => ({ ...previous, scaleFactor: Number(event.target.value) }))} className="w-full" /></div></div></div>}
         </div>
-
-        <div className="lg:col-span-7 space-y-6">
-          {currentItem ? (
-            <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-5 flex flex-col justify-between min-h-[420px]">
-              {items.length > 1 && (
-                <div className="flex space-x-2 overflow-x-auto pb-3 border-b border-slate-700/80 mb-3">
-                  {items.map((item, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => setActiveIdx(idx)}
-                      className={`text-xs px-3 py-1 rounded-md transition-colors ${
-                        idx === activeIdx ? 'bg-indigo-600 text-white' : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'
-                      }`}
-                    >
-                      {item.fileName.slice(0, 14)}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              <div className="relative bg-slate-900 rounded-lg p-3 flex items-center justify-center border border-slate-800 min-h-[220px]">
-                <img 
-                  src={currentOutput?.dataUrl || currentItem.srcUrl} 
-                  alt="Preview" 
-                  className="max-h-52 max-w-full object-contain rounded"
-                />
-                {isProcessing && (
-                  <div className="absolute inset-0 bg-slate-900/60 flex items-center justify-center backdrop-blur-sm rounded-lg">
-                    <RefreshCw className="w-5 h-5 text-indigo-400 animate-spin" />
-                  </div>
-                )}
-              </div>
-
-              {currentOutput && (
-                <div className="mt-4 grid grid-cols-3 gap-3">
-                  <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                    <p className="text-[10px] text-slate-500 font-medium">ORIGINAL</p>
-                    <p className="text-sm font-semibold text-slate-300 mt-0.5">{currentItem.originalKB} KB</p>
-                  </div>
-
-                  <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                    <p className="text-[10px] text-slate-500 font-medium">PROCESSED</p>
-                    <p className="text-sm font-semibold text-indigo-400 mt-0.5">{currentOutput.sizeKB} KB</p>
-                  </div>
-
-                  <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                    <p className="text-[10px] text-slate-500 font-medium">REDUCTION</p>
-                    <p className="text-sm font-semibold text-emerald-400 mt-0.5">{currentOutput.reductionRatio}%</p>
-                  </div>
-                </div>
-              )}
-
-              {currentOutput && (
-                <div className="mt-4 flex justify-between items-center pt-3 border-t border-slate-700/60">
-                  <span className="text-[11px] text-slate-400">
-                    {currentOutput.resWidth} × {currentOutput.resHeight}px @ {currentOutput.effectiveQuality}% quality
-                  </span>
-                  <a
-                    href={currentOutput.dataUrl}
-                    download={`optimized_${currentItem.fileName.split('.')[0]}.${config.exportFormat.split('/')[1]}`}
-                    className="flex items-center space-x-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium px-3.5 py-2 rounded-lg transition-colors"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Download</span>
-                  </a>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="bg-slate-800/30 border border-slate-700/30 rounded-xl p-12 flex flex-col items-center justify-center text-slate-500 text-center min-h-[420px]">
-              <ImageIcon className="w-10 h-10 mb-2 text-slate-600" />
-              <p className="text-xs font-medium text-slate-400">No file loaded</p>
-            </div>
-          )}
-        </div>
+        <div className="lg:col-span-7">{currentItem ? <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-5 min-h-[420px]">{items.length > 1 && <div className="flex space-x-2 overflow-x-auto pb-3 border-b border-slate-700/80 mb-3">{items.map((item, index) => <button key={item.id} onClick={() => setActiveIdx(index)} className={`text-xs px-3 py-1 rounded-md ${index === activeIdx ? 'bg-indigo-600 text-white' : 'bg-slate-700/50 text-slate-400'}`}>{item.fileName.slice(0, 14)}</button>)}</div>}<div className="relative bg-slate-900 rounded-lg p-3 flex items-center justify-center border border-slate-800 min-h-[220px]"><img src={currentOutput?.dataUrl || currentItem.srcUrl} alt="Preview" className="max-h-52 max-w-full object-contain rounded" />{isProcessing && <div className="absolute inset-0 bg-slate-900/60 flex items-center justify-center"><RefreshCw className="w-5 h-5 text-indigo-400 animate-spin" /></div>}</div>{currentOutput && <><div className="mt-4 grid grid-cols-3 gap-3"><div className="bg-slate-900/80 p-2.5 rounded-lg"><p className="text-[10px] text-slate-500">ORIGINAL</p><p className="text-sm font-semibold mt-0.5">{currentItem.originalKB.toFixed(2)} KB</p></div><div className="bg-slate-900/80 p-2.5 rounded-lg"><p className="text-[10px] text-slate-500">PROCESSED</p><p className="text-sm font-semibold text-indigo-400 mt-0.5">{currentOutput.sizeKB.toFixed(2)} KB</p></div><div className="bg-slate-900/80 p-2.5 rounded-lg"><p className="text-[10px] text-slate-500">REDUCTION</p><p className="text-sm font-semibold text-emerald-400 mt-0.5">{currentOutput.reductionRatio.toFixed(1)}%</p></div></div><div className="mt-4 flex justify-between items-center pt-3 border-t border-slate-700/60"><span className="text-[11px] text-slate-400">{currentOutput.resWidth} × {currentOutput.resHeight}px{currentOutput.quality === null ? ' · lossless' : ` @ ${(currentOutput.quality * 100).toFixed(0)}% quality`}</span><a href={currentOutput.dataUrl} download={`optimized_${baseName(currentItem.fileName)}.${currentOutput.extension}`} className="flex items-center space-x-1.5 bg-indigo-600 text-white text-xs font-medium px-3.5 py-2 rounded-lg"><Download className="w-3.5 h-3.5" /><span>Download</span></a></div></>}</div> : <div className="bg-slate-800/30 border border-slate-700/30 rounded-xl p-12 flex flex-col items-center justify-center text-slate-500 text-center min-h-[420px]"><ImageIcon className="w-10 h-10 mb-2 text-slate-600" /><p className="text-xs font-medium text-slate-400">No file loaded</p></div>}</div>
       </main>
     </div>
   );

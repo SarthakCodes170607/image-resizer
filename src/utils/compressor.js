@@ -1,34 +1,47 @@
 export const getBase64SizeKB = (dataUrl) => {
-  if (!dataUrl) return '0.00';
-  const base64Parts = dataUrl.split(',');
-  const base64Data = base64Parts[1] || base64Parts[0];
-  const padding = (base64Data.match(/=/g) || []).length;
-  const bytes = (base64Data.length * 0.75) - padding;
-  return (bytes / 1024).toFixed(2);
+  if (typeof dataUrl !== 'string' || !dataUrl) return 0;
+
+  const commaIndex = dataUrl.indexOf(',');
+  const base64Data = commaIndex === -1 ? dataUrl : dataUrl.slice(commaIndex + 1);
+  const padding = base64Data.endsWith('==') ? 2 : base64Data.endsWith('=') ? 1 : 0;
+
+  return ((base64Data.length * 3) / 4 - padding) / 1024;
 };
 
-export const optimizeToTargetSize = (canvas, format, targetKB) => {
+export const optimizeToTargetSize = (canvas, format, targetKB, maxQuality = 0.8) => {
+  const target = Number(targetKB);
+  const highestQuality = Math.min(1, Math.max(0.01, Number(maxQuality) || 0.8));
+
+  if (!Number.isFinite(target) || target <= 0) {
+    throw new Error('Target size must be greater than 0 KB.');
+  }
+
   let low = 0.01;
-  let high = 1.0;
-  let optimalUrl = null;
-  let optimalQuality = 0.8;
+  let high = highestQuality;
+  let best = null;
 
-  for (let i = 0; i < 6; i++) {
-    const mid = (low + high) / 2;
-    const currentDataUrl = canvas.toDataURL(format, mid);
-    const currentSize = parseFloat(getBase64SizeKB(currentDataUrl));
+  // JPEG/WebP sizes are not perfectly linear, but binary search is a fast
+  // approximation. Keep the largest quality that meets the requested limit.
+  for (let i = 0; i < 8; i += 1) {
+    const quality = (low + high) / 2;
+    const dataUrl = canvas.toDataURL(format, quality);
+    const sizeKB = getBase64SizeKB(dataUrl);
 
-    if (currentSize <= targetKB) {
-      optimalUrl = currentDataUrl;
-      optimalQuality = mid;
-      low = mid; 
+    if (sizeKB <= target) {
+      best = { dataUrl, quality, sizeKB };
+      low = quality;
     } else {
-      high = mid; 
+      high = quality;
     }
   }
 
+  if (best) return { ...best, targetMet: true };
+
+  const dataUrl = canvas.toDataURL(format, 0.01);
   return {
-    dataUrl: optimalUrl || canvas.toDataURL(format, 0.01),
-    quality: optimalQuality,
+    dataUrl,
+    quality: 0.01,
+    sizeKB: getBase64SizeKB(dataUrl),
+    targetMet: false,
   };
 };
