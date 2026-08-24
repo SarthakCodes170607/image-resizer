@@ -10,7 +10,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "heic2any": "^0.0.4",
     "lucide-react": "^1.33.0",
+    "mammoth": "^1.12.1",
+    "pdfjs-dist": "^6.2.108",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "recharts": "^3.10.1"
