@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 
 export default function App() {
   const [imageFile, setImageFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
   const [targetKB, setTargetKB] = useState(100);
   const [resizedImage, setResizedImage] = useState(null);
   const [processing, setProcessing] = useState(false);
@@ -11,6 +12,7 @@ export default function App() {
     const file = e.target.files[0];
     if (file) {
       setImageFile(file);
+      setImagePreview(URL.createObjectURL(file));
       setResizedImage(null);
       setStats(null);
     }
@@ -78,44 +80,74 @@ export default function App() {
   };
 
   return (
-    <div style={{ padding: '2rem', fontFamily: 'sans-serif', maxWidth: '600px', margin: 'auto' }}>
-      <h2>Target File Size Image Resizer</h2>
+    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center justify-center p-6">
+      <div className="max-w-xl w-full bg-slate-800 rounded-2xl shadow-xl p-8 border border-slate-700">
+        <h1 className="text-3xl font-bold text-center mb-2 bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
+          Image Resizer & Compressor
+        </h1>
+        <p className="text-slate-400 text-center mb-6 text-sm">
+          Target exact KB sizes with 100% client-side privacy.
+        </p>
 
-      <input type="file" accept="image/*" onChange={handleImageUpload} />
-
-      {imageFile && (
-        <div style={{ marginTop: '1.5rem' }}>
-          <label>
-            <strong>Target Size (KB):</strong>
-            <input
-              type="number"
-              value={targetKB}
-              onChange={(e) => setTargetKB(Number(e.target.value))}
-              style={{ marginLeft: '10px', padding: '5px', width: '100px' }}
-            />
+        {/* Upload Box */}
+        <div className="mb-6">
+          <label className="flex flex-col items-center justify-center w-full h-36 border-2 border-dashed border-slate-600 hover:border-blue-500 rounded-xl cursor-pointer bg-slate-900/50 transition">
+            <span className="text-sm text-slate-400">
+              {imageFile ? imageFile.name : 'Click or drag an image here'}
+            </span>
+            <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
           </label>
-
-          <button
-            onClick={compressToTargetSize}
-            disabled={processing}
-            style={{ marginLeft: '10px', padding: '6px 12px', cursor: 'pointer' }}
-          >
-            {processing ? 'Compressing...' : 'Resize Image'}
-          </button>
         </div>
-      )}
 
-      {stats && (
-        <div style={{ marginTop: '1.5rem' }}>
-          <p><strong>Original Size:</strong> {stats.originalSize} KB</p>
-          <p><strong>Resulting Size:</strong> {stats.finalSize} KB</p>
-          <img src={resizedImage} alt="Resized" style={{ maxWidth: '100%', marginTop: '10px' }} />
-          <br />
-          <a href={resizedImage} download={`resized_${targetKB}KB.jpg`}>
-            <button style={{ marginTop: '10px', padding: '8px 16px' }}>Download Image</button>
-          </a>
-        </div>
-      )}
+        {imageFile && (
+          <div className="space-y-6">
+            {/* Controls */}
+            <div className="bg-slate-900/80 p-4 rounded-xl border border-slate-700/50">
+              <label className="block text-sm font-medium mb-2 text-slate-300">
+                Target File Size (KB):
+              </label>
+              <div className="flex gap-3">
+                <input
+                  type="number"
+                  value={targetKB}
+                  onChange={(e) => setTargetKB(Number(e.target.value))}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-4 py-2 w-full text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="e.g. 100"
+                />
+                <button
+                  onClick={compressToTargetSize}
+                  disabled={processing}
+                  className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 text-white font-semibold px-6 py-2 rounded-lg transition shrink-0"
+                >
+                  {processing ? 'Processing...' : 'Compress'}
+                </button>
+              </div>
+            </div>
+
+            {/* Results / Stats */}
+            {stats && (
+              <div className="bg-slate-900/80 p-4 rounded-xl border border-slate-700/50 space-y-4">
+                <div className="flex justify-between text-sm text-slate-300 border-b border-slate-800 pb-3">
+                  <span>Original: <strong className="text-white">{stats.originalSize} KB</strong></span>
+                  <span>Target Result: <strong className="text-emerald-400">{stats.finalSize} KB</strong></span>
+                </div>
+
+                <div className="overflow-hidden rounded-lg bg-slate-950 max-h-64 flex items-center justify-center">
+                  <img src={resizedImage} alt="Resized output" className="object-contain h-full w-full" />
+                </div>
+
+                <a
+                  href={resizedImage}
+                  download={`resized_${targetKB}KB.jpg`}
+                  className="block text-center w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 rounded-lg transition"
+                >
+                  Download Compressed Image
+                </a>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
