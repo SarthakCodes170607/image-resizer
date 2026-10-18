@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { optimizeHeicToTarget } from './heic';
+import { NOT_ISOLATED_MESSAGE, encodeHeic, optimizeHeicToTarget } from './heic';
 
 // A pretend HEIC encoder. `sizeKBAtQuality` decides how big the file is for a
 // given quality (1 to 100), so each test can describe how the "encoder" behaves.
@@ -73,5 +73,28 @@ describe('optimizeHeicToTarget (HEIC quality search)', () => {
     await optimizeHeicToTarget(canvas, 10, 0.5, encode);
 
     expect(encode.mock.calls[0][0]).toBe(canvas);
+  });
+});
+
+describe('encodeHeic on a page that is not cross-origin isolated', () => {
+  it('fails right away with a clear message instead of hanging', async () => {
+    vi.stubGlobal('crossOriginIsolated', false);
+
+    try {
+      await expect(encodeHeic({}, 50)).rejects.toThrow(NOT_ISOLATED_MESSAGE);
+      await expect(encodeHeic({}, 50)).rejects.toThrow('cross-origin isolated');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('makes the quality search fail with the same message', async () => {
+    vi.stubGlobal('crossOriginIsolated', false);
+
+    try {
+      await expect(optimizeHeicToTarget({}, 50, 0.8)).rejects.toThrow(NOT_ISOLATED_MESSAGE);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

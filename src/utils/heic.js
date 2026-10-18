@@ -4,8 +4,19 @@
 // icodec's HEIC encoder has to run inside a module worker, which is why the
 // actual encoding lives in heicEncoder.worker.js.
 
+export const NOT_ISOLATED_MESSAGE =
+  'HEIC output needs a cross-origin isolated page. Serve the app with the headers ' +
+  'Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp.';
+
 export function encodeHeic(canvas, quality) {
   return new Promise((resolve, reject) => {
+    // Without isolation the encoder's worker fails silently and never answers, which
+    // would leave the page spinning forever. Fail early with a clear message instead.
+    if (!globalThis.crossOriginIsolated) {
+      reject(new Error(NOT_ISOLATED_MESSAGE));
+      return;
+    }
+
     const context = canvas.getContext('2d');
     if (!context) {
       reject(new Error('Could not create a canvas context.'));

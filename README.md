@@ -29,7 +29,7 @@ Image Resizer flips that around. You choose the size you need, and it searches f
 - **Target-size compression.** Enter a limit in KB and the app searches for the highest quality that stays under it.
 - **Four formats.** JPEG, PNG, HEIC/HEIF and PDF, each handled in its own way (see below).
 - **Private by design.** Files are decoded, compressed and downloaded entirely in your browser. There is no backend and no upload.
-- **HEIC support.** iPhone photos are decoded in the browser with WebAssembly, which browsers can't do on their own. Re-encoding as HEIC needs an extra server setting (see [Good to know](#good-to-know)).
+- **Real HEIC support.** iPhone photos are decoded *and* re-encoded as HEIC using WebAssembly, which browsers can't do on their own.
 - **Whole-document PDF targets.** For PDFs, the size limit applies to the entire file, not page by page.
 - **Manual control.** Turn the target off to get a quality slider, and use the scale slider (10% to 100%) to reduce dimensions.
 - **Live results.** See the original size, new size, percentage saved, final dimensions and the quality that was chosen.
@@ -41,7 +41,7 @@ Image Resizer flips that around. You choose the size you need, and it searches f
 | --- | --- |
 | **JPEG** | Binary-searches the encoder quality until the file fits under your target. |
 | **PNG** | Re-encodes losslessly. PNG has no quality dial, so the scale slider is what shrinks it, and the app tells you if the target wasn't reached. |
-| **HEIC / HEIF** | Decodes with `icodec` (WebAssembly), then binary-searches quality using a HEIC encoder that runs in a Web Worker so it doesn't freeze the page. |
+| **HEIC / HEIF** | Decodes with `icodec` (WebAssembly), then binary-searches quality using a HEIC encoder that runs in a Web Worker so it doesn't freeze the page. Needs two response headers when hosted (see [Deploying](#deploying)). |
 | **PDF** | Renders every page with `pdf.js`, then rebuilds the document with `pdf-lib`, using one shared JPEG quality that is searched so the whole file lands under the target. |
 
 The output format always matches the input, so a JPEG stays a JPEG and a HEIC stays a HEIC.
@@ -69,6 +69,22 @@ Other scripts:
 | `npm test` | Runs the unit tests once. |
 | `npm run test:watch` | Re-runs the tests every time you save a file. |
 
+## Deploying
+
+The app is a static site, so `npm run build` produces a `dist/` folder you can put on any static host.
+
+HEIC re-encoding shares memory with a worker, and browsers only allow that on [cross-origin isolated](https://developer.mozilla.org/en-US/docs/Web/API/Window/crossOriginIsolated) pages. For that, your host must send these two headers with every response:
+
+```text
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+- `npm run dev` and `npm run preview` already send them (see `vite.config.js`).
+- Hosts such as Netlify, Cloudflare Pages and Vercel let you set custom headers.
+- GitHub Pages does not let you set response headers.
+- If the headers are missing, the app still works for JPEG, PNG and PDF, and shows a clear message when you try a HEIC file instead of getting stuck.
+
 ## Tech stack
 
 - [React 19](https://react.dev) for the interface
@@ -85,7 +101,7 @@ Other scripts:
 ```text
 image-resizer/
 ├── index.html
-├── vite.config.js
+├── vite.config.js                 # also sets the headers HEIC needs
 ├── docs/
 │   └── screenshot.png
 ├── public/                        # favicon and static icons
@@ -127,11 +143,13 @@ The tests focus on the size-search logic, which is the heart of the app. They us
 - stays within a fixed number of encode attempts,
 - uses one shared quality across all pages of a PDF.
 
+They also check that HEIC encoding fails straight away with a clear message when the page is not cross-origin isolated, instead of hanging.
+
 ## Good to know
 
 - **PDF output is image-based.** Pages are turned into pictures and re-embedded, which shrinks scanned or image-heavy PDFs a lot, but text in the result can no longer be selected or searched.
 - **PNG is lossless**, so the re-encoded file can even be larger than the original. Lowering the scale is what makes a PNG smaller.
-- **HEIC output needs a cross-origin isolated page.** The HEIC encoder shares memory with a worker, which browsers only allow when the server sends the `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers. The dev server doesn't send them yet, so a HEIC file loads and previews but never finishes compressing.
+- **HEIC output needs two response headers when you host the app.** See [Deploying](#deploying).
 - **Files are limited to 25 MB each.**
 - **The PDF preview shows page 1 only.** Download the result to see every page.
 - Most compression work runs on the page's main thread (only HEIC encoding uses a worker), so the interface may pause briefly on very large files.
