@@ -29,7 +29,7 @@ Image Resizer flips that around. You choose the size you need, and it searches f
 - **Target-size compression.** Enter a limit in KB and the app searches for the highest quality that stays under it.
 - **Four formats.** JPEG, PNG, HEIC/HEIF and PDF, each handled in its own way (see below).
 - **Private by design.** Files are decoded, compressed and downloaded entirely in your browser. There is no backend and no upload.
-- **Real HEIC support.** iPhone photos are decoded *and* re-encoded as HEIC using WebAssembly, which browsers can't do on their own.
+- **HEIC support.** iPhone photos are decoded in the browser with WebAssembly, which browsers can't do on their own. Re-encoding as HEIC needs an extra server setting (see [Good to know](#good-to-know)).
 - **Whole-document PDF targets.** For PDFs, the size limit applies to the entire file, not page by page.
 - **Manual control.** Turn the target off to get a quality slider, and use the scale slider (10% to 100%) to reduce dimensions.
 - **Live results.** See the original size, new size, percentage saved, final dimensions and the quality that was chosen.
@@ -66,6 +66,8 @@ Other scripts:
 | `npm run build` | Creates an optimized production build in `dist/`. |
 | `npm run preview` | Serves the production build locally. |
 | `npm run lint` | Runs [Oxlint](https://oxc.rs) over the project. |
+| `npm test` | Runs the unit tests once. |
+| `npm run test:watch` | Re-runs the tests every time you save a file. |
 
 ## Tech stack
 
@@ -76,6 +78,7 @@ Other scripts:
 - [pdf-lib](https://pdf-lib.js.org) to build the compressed PDF
 - [icodec](https://github.com/Kaciras/icodec) for HEIC encoding and decoding in WebAssembly
 - [lucide-react](https://lucide.dev) for icons
+- [Vitest](https://vitest.dev) for unit tests
 
 ## Project structure
 
@@ -85,19 +88,50 @@ image-resizer/
 ├── vite.config.js
 ├── docs/
 │   └── screenshot.png
-├── public/                      # favicon and static icons
+├── public/                        # favicon and static icons
 └── src/
-    ├── main.jsx                 # React entry point
-    ├── App.jsx                  # UI, file loading, per-format processing
-    ├── heicEncoder.worker.js    # HEIC encoding in a Web Worker
+    ├── main.jsx                   # React entry point
+    ├── App.jsx                    # state, and ties the pieces together
+    ├── heicEncoder.worker.js      # HEIC encoding in a Web Worker
+    ├── components/                # the interface
+    │   ├── Header.jsx
+    │   ├── ErrorBanner.jsx
+    │   ├── UploadZone.jsx         # drag-and-drop and file picker
+    │   ├── SettingsPanel.jsx      # target size, scale and quality controls
+    │   ├── PreviewPanel.jsx       # preview, file tabs
+    │   └── ResultSummary.jsx      # before/after numbers and download button
+    ├── hooks/
+    │   └── useObjectUrls.js       # creates and cleans up download links
     └── utils/
-        └── compressor.js        # target-size search for JPEG and PDF
+        ├── compressor.js          # target-size search for JPEG and PDF
+        ├── heic.js                # HEIC encoding and its quality search
+        ├── processItem.js         # picks the right method for each format
+        ├── loadAsset.js           # decodes uploaded files into canvases
+        ├── pdfPages.js            # renders PDF pages with pdf.js
+        ├── canvas.js              # canvas helpers (scale, convert)
+        ├── fileTypes.js           # extensions, formats and upload limits
+        └── *.test.js              # unit tests, next to the code they test
 ```
+
+## Tests
+
+```bash
+npm test
+```
+
+The tests focus on the size-search logic, which is the heart of the app. They use fake canvases and a fake HEIC encoder, so they run in under a second without a browser. They check that each search:
+
+- picks the highest quality that still fits the target,
+- never goes above the quality ceiling,
+- gives up cleanly and reports it when a target is impossible,
+- stays within a fixed number of encode attempts,
+- uses one shared quality across all pages of a PDF.
 
 ## Good to know
 
 - **PDF output is image-based.** Pages are turned into pictures and re-embedded, which shrinks scanned or image-heavy PDFs a lot, but text in the result can no longer be selected or searched.
-- **PNG is lossless**, so a very large PNG may not reach a small target unless you also lower the scale.
+- **PNG is lossless**, so the re-encoded file can even be larger than the original. Lowering the scale is what makes a PNG smaller.
+- **HEIC output needs a cross-origin isolated page.** The HEIC encoder shares memory with a worker, which browsers only allow when the server sends the `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers. The dev server doesn't send them yet, so a HEIC file loads and previews but never finishes compressing.
 - **Files are limited to 25 MB each.**
 - **The PDF preview shows page 1 only.** Download the result to see every page.
 - Most compression work runs on the page's main thread (only HEIC encoding uses a worker), so the interface may pause briefly on very large files.
